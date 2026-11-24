@@ -33,3 +33,9 @@ The dashboard home now has two sections: **Alert** and **News**.
 ## Current deployment state
 
 Code is committed to this repository under `pump-dump-alert/`. It is **not automatically a live website** until the Node.js service is deployed to an always-on host with HTTPS and environment variables configured. GitHub Pages alone cannot run the WebSocket backend.
+
+## DYOR Futures scenarios
+
+The dashboard includes a third **DYOR** view. It screens liquid Binance USDⓈ-M USDT perpetual contracts and ranks a small watchlist using 15-minute EMA20/EMA50 trend, RSI(14), recent momentum, volume, and ATR. Entry zones are reference ranges around the latest price; TP/SL levels are illustrative ATR-based scenarios. A neutral **WAIT** result is valid and does not show TP/SL levels.
+
+This is a transparent technical heuristic, not machine-learning forecasting, a promise of price direction, or financial advice. It does not place orders. Always verify live charts, funding, liquidity, event risk, and higher timeframes before making independent decisions. Public Binance Futures data only; no account API key is required.
