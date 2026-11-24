@@ -46,6 +46,39 @@ app.get("/api/news",async(_q,r)=>{
  newsCache={at:Date.now(),items:merged};r.json({updatedAt:newsCache.at,items:merged,feeds:NEWS_FEEDS.length});
 });
 
+
+let predictionCache={at:0,items:[]};
+const ema=(a,n)=>{if(a.length<n)return null;let e=a.slice(0,n).reduce((s,v)=>s+v,0)/n,k=2/(n+1);for(let i=n;i<a.length;i++)e=a[i]*k+e*(1-k);return e};
+function rsi(closes,n=14){if(closes.length<=n)return 50;let g=0,l=0;for(let i=closes.length-n;i<closes.length;i++){const d=closes[i]-closes[i-1];if(d>0)g+=d;else l-=d}if(!l)return 100;return 100-100/(1+g/l)}
+app.get("/api/predictions",async(_q,r)=>{
+ if(Date.now()-predictionCache.at<120000&&predictionCache.items.length)return r.json({updatedAt:predictionCache.at,items:predictionCache.items});
+ try{
+  const ex=await fetch("https://fapi.binance.com/fapi/v1/exchangeInfo");
+  if(!ex.ok)throw Error("Futures exchange info unavailable");
+  const info=await ex.json(),tradable=new Set(info.symbols.filter(s=>s.status==="TRADING"&&s.quoteAsset==="USDT"&&s.contractType==="PERPETUAL").map(s=>s.symbol));
+  const tr=await fetch("https://fapi.binance.com/fapi/v1/ticker/24hr");
+  if(!tr.ok)throw Error("Futures tickers unavailable");
+  const tickers=(await tr.json()).filter(t=>tradable.has(t.symbol)&&Number(t.quoteVolume)>2000000&&Number(t.lastPrice)>0).sort((a,b)=>Number(b.quoteVolume)-Number(a.quoteVolume)).slice(0,35);
+  const analyzed=await Promise.all(tickers.map(async t=>{try{
+   const u="https://fapi.binance.com/fapi/v1/klines?symbol="+encodeURIComponent(t.symbol)+"&interval=15m&limit=80";
+   const kr=await fetch(u);if(!kr.ok)return null;const ks=await kr.json();if(!Array.isArray(ks)||ks.length<55)return null;
+   const close=ks.map(k=>+k[4]),high=ks.map(k=>+k[2]),low=ks.map(k=>+k[3]),vol=ks.map(k=>+k[5]),price=Number(t.lastPrice);
+   const e20=ema(close,20),e50=ema(close,50),r=rsi(close),momentum=(close[close.length-1]/close[close.length-5]-1)*100;
+   const trs=[];for(let i=1;i<ks.length;i++)trs.push(Math.max(high[i]-low[i],Math.abs(high[i]-close[i-1]),Math.abs(low[i]-close[i-1])));
+   const atr=trs.slice(-14).reduce((a,b)=>a+b,0)/Math.min(14,trs.length),atrPct=atr/price*100;
+   const avgVol=vol.slice(-21,-1).reduce((a,b)=>a+b,0)/20,volRatio=avgVol?vol[vol.length-1]/avgVol:1;
+   let score=0;if(e20>e50)score++;else score--;if(price>e20)score++;else score--;if(momentum>0.15)score++;else if(momentum< -0.15)score--;if(r>52&&r<72)score++;else if(r<48&&r>28)score--;if(volRatio>1.15)score+=momentum>0?1:momentum<0?-1:0;
+   let bias="WAIT";if(score>=3)bias="LONG BIAS";else if(score<=-3)bias="SHORT BIAS";
+   const entryLow=price-atr*.2,entryHigh=price+atr*.2,sl=bias==="LONG BIAS"?price-atr*1.5:bias==="SHORT BIAS"?price+atr*1.5:null;
+   const tp1=bias==="LONG BIAS"?price+atr*1.5:bias==="SHORT BIAS"?price-atr*1.5:null,tp2=bias==="LONG BIAS"?price+atr*2.5:bias==="SHORT BIAS"?price-atr*2.5:null;
+   const reason=[];reason.push(e20>e50?"EMA20 above EMA50":"EMA20 below EMA50");reason.push("15m momentum "+(momentum>=0?"+":"")+momentum.toFixed(2)+"%");reason.push("RSI "+r.toFixed(0));if(volRatio>1.15)reason.push("volume "+volRatio.toFixed(1)+"× recent average");
+   return {symbol:t.symbol,price,change24h:Number(t.priceChangePercent),quoteVolume:Number(t.quoteVolume),bias,score,rsi:+r.toFixed(1),momentum:+momentum.toFixed(2),atrPct:+atrPct.toFixed(2),entryLow,entryHigh,sl,tp1,tp2,updatedAt:Date.now(),reasons:reason,valid:atrPct>0.05&&atrPct<8};
+  }catch{return null}}));
+  const items=analyzed.filter(x=>x&&x.valid).sort((a,b)=>Math.abs(b.score)-Math.abs(a.score)).slice(0,12);
+  predictionCache={at:Date.now(),items};r.json({updatedAt:predictionCache.at,items,method:"15m EMA20/EMA50, RSI14, short momentum, ATR-based scenario levels; heuristic only"});
+ }catch(e){console.error("Predictions:",e.message);r.status(503).json({error:"Could not retrieve Futures market data. Please retry shortly."})}
+});
+
 app.get("*",(q,r,next)=>q.path.startsWith("/api/")?next():r.sendFile(path.join(PUB,"index.html")));
 server.listen(PORT,()=>{console.log("Dashboard on",PORT);start().catch(e=>{console.error(e.message);setTimeout(()=>start().catch(console.error),10000)})});
 process.on("SIGTERM",()=>{stopping=true;if(reconnect)clearTimeout(reconnect);sockets.forEach(s=>s.close());server.close(()=>process.exit(0))});
